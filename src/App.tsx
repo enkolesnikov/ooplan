@@ -21,6 +21,10 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 const jsonOptions = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const LS_PROJECTS = 'cableplan:projects';
+function lsProjects(): Project[] { try { const raw = localStorage.getItem(LS_PROJECTS); const list = JSON.parse(raw || '[]'); return Array.isArray(list) ? list : []; } catch { return []; } }
+function lsSave(project: Project) { const list = lsProjects(); const i = list.findIndex(p => p.id === project.id); if (i >= 0) list[i] = project; else list.push(project); localStorage.setItem(LS_PROJECTS, JSON.stringify(list)); }
+function lsDelete(id: string) { localStorage.setItem(LS_PROJECTS, JSON.stringify(lsProjects().filter(p => p.id !== id))); }
 
 export default function App() {
   const [project, setProject] = useState<Project>(freshProject);
@@ -54,6 +58,7 @@ export default function App() {
   const [pdfPages, setPdfPages] = useState(0);
   const [pdfError, setPdfError] = useState('');
   const [pointer, setPointer] = useState<Point | null>(null);
+  const [staticMode, setStaticMode] = useState(false);
   const canvas = useRef<HTMLCanvasElement>(null);
   const stage = useRef<HTMLDivElement>(null);
   const upload = useRef<HTMLInputElement>(null);
@@ -94,6 +99,7 @@ export default function App() {
   async function run(task: () => Promise<void>) { setBusy(true); setError(''); try { await task(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
   async function saveProject(): Promise<Project> {
     const snapshot = clone(projectRef.current);
+    if (staticMode) { lsSave(snapshot); setPersisted(true); setSaved(JSON.stringify(snapshot)); setMessage(`Проект «${snapshot.name}» сохранён в браузере`); return snapshot; }
     const result = await api<Project>(persisted ? `/api/projects/${snapshot.id}` : '/api/projects', jsonOptions(persisted ? 'PUT' : 'POST', snapshot));
     setPersisted(true); setSaved(JSON.stringify(result));
     if (JSON.stringify(projectRef.current) === JSON.stringify(snapshot)) { setProject(result); projectRef.current = result; }
@@ -101,7 +107,7 @@ export default function App() {
   }
   async function deleteProject(id: string, name: string) {
     if (!window.confirm(`Удалить проект «${name}»? Это действие необратимо.`)) return;
-    await api('/api/projects/' + id, { method: 'DELETE' });
+    if (staticMode) lsDelete(id); else await api('/api/projects/' + id, { method: 'DELETE' });
     setProjects(list => list ? list.filter(p => p.id !== id) : null);
     setMessage(`Проект «${name}» удалён.`);
   }
@@ -117,6 +123,7 @@ export default function App() {
     setPan({ x: center.x - (center.x - pan.x) * z / zoom, y: center.y - (center.y - pan.y) * z / zoom }); setZoom(z);
   }
   useEffect(() => { const handler = (e: BeforeUnloadEvent) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } }; window.addEventListener('beforeunload', handler); return () => window.removeEventListener('beforeunload', handler); }, [dirty]);
+  useEffect(() => { fetch('/api/health').then(r => { if (!r.ok) setStaticMode(true); }).catch(() => setStaticMode(true)); }, []);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).matches('input,select,textarea')) return;
@@ -138,7 +145,7 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    const task = pdfjs.getDocument(`/api/pdfs/${floor.pdfId}`);
+    const task = pdfjs.getDocument(floor.pdfId.startsWith('data:') ? floor.pdfId : `/api/pdfs/${floor.pdfId}`);
     let renderTask: ReturnType<pdfjs.PDFPageProxy['render']> | undefined;
     void (async () => {
       try {
@@ -329,12 +336,47 @@ export default function App() {
   }
   async function uploadPdf(file: File) {
     if (!floor) return;
+    if (staticMode) {
+      const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result as string); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
+      mutate(p => { const target = p.floors.find(f => f.id === floor.id)!; target.pdfId = dataUrl; target.page = 1; target.metersPerUnit = null; });
+      setMessage(`PDF «${file.name}» загружен. Выберите страницу и откалибруйте масштаб.`);
+      return;
+    }
     const data = new FormData(); data.append('file', file);
     const result = await api<{ id: string; name: string }>('/api/pdfs', { method: 'POST', body: data });
     mutate(p => { const target = p.floors.find(f => f.id === floor.id)!; target.pdfId = result.id; target.page = 1; target.metersPerUnit = null; });
     setMessage(`PDF «${result.name}» загружен. Выберите страницу и откалибруйте масштаб.`);
   }
+  function clientCsv(p: Project): string {
+    const specs = specifications(p);
+    const rows: (string | number | null)[][] = [];
+    rows.push(['Кабельный журнал']);
+    rows.push(['Номер', 'Наименование', 'Марка', 'От', 'До', 'Количество', 'Итог одного, м', 'Итог всего, м', 'Полный']);
+    for (const c of p.cables) {
+      const r = calculateCable(p, c);
+      const name = (id: string) => p.equipment.find(e => e.id === id)?.number || id;
+      rows.push([c.number, c.name, c.brand, name(c.fromId), name(c.toId), c.quantity, r.total, r.total === null ? null : r.total * c.quantity, r.complete ? 'Да' : 'Нет']);
+    }
+    rows.push([]); rows.push(['Оборудование']); rows.push(['Тип', 'Модель', 'Этаж', 'Количество']);
+    for (const g of specs.equipment) rows.push([g.type, g.model, g.floor, g.quantity]);
+    rows.push([]); rows.push(['Кабели (сводно)']); rows.push(['Марка', 'Линий', 'Геометрия, м', 'Итого, м']);
+    for (const g of specs.cables) rows.push([g.brand, g.lines, g.geometry, g.total]);
+    rows.push([]); rows.push(['Инфраструктура']); rows.push(['Тип', 'Длина, м', 'Сегментов', 'Кабелей']);
+    for (const g of specs.infrastructure) rows.push([g.type, g.length, g.segments, g.cables]);
+    const cell = (v: string | number | null) => `"${v === null ? '' : String(v).replaceAll('"', '""')}"`;
+    return '\uFEFF' + rows.map(r => r.map(cell).join(';')).join('\r\n');
+  }
   async function download(kind: 'csv' | 'xlsx' | 'pdf' | 'backup') {
+    if (staticMode) {
+      if (kind === 'xlsx' || kind === 'pdf') { setError('Экспорт XLSX/PDF доступен только в локальной версии. Используйте CSV.'); return; }
+      const current = projectRef.current;
+      const text = kind === 'backup' ? JSON.stringify({ schemaVersion: 1, project: current, pdfs: [] }) : clientCsv(current);
+      const type = kind === 'backup' ? 'application/json' : 'text/csv;charset=utf-8';
+      const blob = new Blob([text], { type });
+      const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${current.name}.${kind === 'backup' ? 'json' : 'csv'}`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      setMessage(kind === 'backup' ? 'Резервная копия выгружена.' : 'Экспорт CSV готов.');
+      return;
+    }
     const current = await saveProject();
     const url = kind === 'backup' ? `/api/projects/${current.id}/backup` : `/api/projects/${current.id}/export?format=${kind}`;
     const response = await fetch(url); if (!response.ok) throw new Error(await response.text());
@@ -344,7 +386,7 @@ export default function App() {
   const toolHints: Record<Tool, string> = { select: 'Выберите объект • тяните оборудование и узлы трассы', pan: 'Перетаскивайте план • колесо — масштаб', equipment: 'Клик на плане — добавить оборудование', route: 'Клики — вершины • Enter — завершить • Esc — отменить', calibrate: 'Укажите две точки известного размера на PDF', cable: 'Выбирайте сегменты по порядку от начала к концу' };
 
   return <div className="app-shell">
-    <header className="topbar"><button className="menu-toggle" aria-label="Меню" onClick={() => setMenuOpen(v => !v)}>☰</button><div className="brand"><span className="brand-mark">К</span><div>КОНТУР<small>КАБЕЛЬНЫЙ ПЛАН</small></div></div><div className="project-heading"><input aria-label="Название проекта" value={project.name} onChange={e => mutate(p => { p.name = e.target.value; })} /><span className={dirty ? 'save-indicator dirty' : 'save-indicator'}>{dirty ? '● Не сохранён' : '● Сохранён'}</span></div><div className="top-actions"><button onClick={() => { if (mayLeave()) load(freshProject(), false); }}>Новый</button><button disabled={busy} onClick={() => void run(async () => { setProjects(await api('/api/projects')); })}>Открыть</button><button disabled={busy} title="Загрузить ранее экспортированный JSON-проект" onClick={() => restoreInput.current?.click()}>Загрузить</button><button className="primary" disabled={busy} onClick={() => void run(async () => { await saveProject(); })}>{busy ? 'Подождите…' : 'Сохранить'}</button></div></header>
+    <header className="topbar"><button className="menu-toggle" aria-label="Меню" onClick={() => setMenuOpen(v => !v)}>☰</button><div className="brand"><span className="brand-mark">C</span><div>CablePlan<small>кабельный план</small></div></div><div className="project-heading"><input aria-label="Название проекта" value={project.name} onChange={e => mutate(p => { p.name = e.target.value; })} /><span className={dirty ? 'save-indicator dirty' : 'save-indicator'}>{dirty ? '● Не сохранён' : '● Сохранён'}</span></div><div className="top-actions"><button onClick={() => { if (mayLeave()) load(freshProject(), false); }}>Новый</button><button disabled={busy} onClick={() => void run(async () => { setProjects(staticMode ? lsProjects().map(p => ({ id: p.id, name: p.name, updatedAt: p.updatedAt })) : await api('/api/projects')); })}>Открыть</button><button disabled={busy} title="Загрузить ранее экспортированный JSON-проект" onClick={() => restoreInput.current?.click()}>Загрузить</button><button className="primary" disabled={busy} onClick={() => void run(async () => { await saveProject(); })}>{busy ? 'Подождите…' : 'Сохранить'}</button></div></header>
     <div className="commandbar"><div className="view-tabs">{([['plan', 'План'], ['journal', 'Кабельный журнал'], ['specs', 'Ведомости']] as const).map(([id, label]) => <button key={id} className={view === id ? 'active' : ''} onClick={() => setView(id)}>{label}</button>)}</div><div className="command-actions"><button onClick={() => { if (mayLeave()) { load(createDemoProject(), false); setMessage('Учебный проект: синтетические данные, не рабочая документация.'); } }}>Учебный проект</button><details className="export-menu"><summary>Экспорт / копия ↓</summary><div>{(['csv', 'xlsx', 'pdf', 'backup'] as const).map(format => <button key={format} disabled={busy} onClick={() => void run(() => download(format))}>{format === 'backup' ? 'JSON с исходными PDF' : format.toUpperCase()}</button>)}<button onClick={() => restoreInput.current?.click()}>Восстановить JSON…</button></div></details></div></div>
     {error && <div className="banner error" role="alert"><strong>Не удалось выполнить действие.</strong> {error}<button onClick={() => setError('')}>×</button></div>}
     <div className="workspace"><aside className={`sidebar ${menuOpen ? 'open' : ''}`}><div className="sidebar-title">Структура проекта <span>{project.floors.length} эт.</span></div><div className="structure-tabs">{([['floors', 'Этажи'], ['equipment', 'Оборуд.'], ['routes', 'Трассы'], ['cables', 'Кабели']] as const).map(([id, name]) => <button className={tab === id ? 'active' : ''} key={id} onClick={() => setTab(id)}>{name}<span>{project[id].length}</span></button>)}</div>
@@ -359,7 +401,7 @@ export default function App() {
       {pdfError && <div className="banner error">{pdfError}</div>}
       <div className={`drawing-stage tool-${tool}`} ref={stage} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onWheel={e => { e.preventDefault(); changeZoom(zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)); }}>
         {floor && <div className="drawing-sheet" style={{ width: floor.width, height: floor.height, transform: `translate(${pan.x}px,${pan.y}px) scale(${zoom})` }}>
-          {floor.pdfId ? <canvas ref={canvas} style={{ width: '100%', height: '100%' }} /> : <div className="no-pdf"><span>КОНТУР / {floor.name.toUpperCase()}</span><p>Рабочее поле без PDF</p><small>{project.name.includes('Учеб') ? 'Синтетическая схема для проверки расчёта' : 'Загрузите план PDF и задайте масштаб по двум точкам'}</small></div>}
+          {floor.pdfId ? <canvas ref={canvas} style={{ width: '100%', height: '100%' }} /> : <div className="no-pdf"><span>CablePlan / {floor.name.toUpperCase()}</span><p>Рабочее поле без PDF</p><small>{project.name.includes('Учеб') ? 'Синтетическая схема для проверки расчёта' : 'Загрузите план PDF и задайте масштаб по двум точкам'}</small></div>}
           <svg className="plan-overlay" width={floor.width} height={floor.height} viewBox={`0 0 ${floor.width} ${floor.height}`}>
             <defs><pattern id="drawing-grid" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse"><path d={`M ${gridSize} 0 L 0 0 0 ${gridSize}`} fill="none" stroke="#63828e" strokeOpacity=".19" strokeWidth={.5 / zoom} /></pattern></defs>
             {grid && <rect width="100%" height="100%" fill="url(#drawing-grid)" pointerEvents="none" />}
@@ -393,8 +435,8 @@ export default function App() {
     {(menuOpen || propsOpen) && <div className="scrim" onClick={() => { setMenuOpen(false); setPropsOpen(false); }} />}
     <button className={`props-fab ${propsOpen ? 'active' : ''}`} aria-label="Свойства" onClick={() => setPropsOpen(v => !v)}>⚙</button>
     <input hidden ref={upload} type="file" accept="application/pdf,.pdf" onChange={e => { const file = e.target.files?.[0]; if (file) void run(() => uploadPdf(file)); e.target.value = ''; }} />
-    <input hidden ref={restoreInput} type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file && mayLeave()) void run(async () => { const parsed = JSON.parse(await file.text()) as Record<string, unknown>; if (parsed && typeof parsed === 'object' && 'project' in parsed) { const result = await api<Project>('/api/restore', jsonOptions('POST', parsed)); load(result, true); setMessage('Резервная копия с PDF восстановлена.'); } else if (parsed && (parsed as Partial<Project>).schemaVersion === 1 && Array.isArray((parsed as Partial<Project>).floors)) { load(parsed as unknown as Project, false); setMessage('Проект загружен из файла. Подложку PDF при необходимости загрузите заново.'); } else { setError('Файл не является проектом или резервной копией Контура.'); } }); e.target.value = ''; }} />
-    {projects && <div className="modal-backdrop"><section className="modal"><div className="modal-heading"><h2>Открыть проект</h2><button onClick={() => setProjects(null)}>×</button></div>{projects.length ? projects.map(p => <div className="project-row" key={p.id}><button className="project-option" disabled={busy} onClick={() => { if (mayLeave()) void run(async () => { const result = await api<Project>(`/api/projects/${p.id}`); load(result, true); setProjects(null); setMessage(`Проект «${result.name}» открыт.`); }); }}><strong>{p.name}</strong><small>{new Date(p.updatedAt).toLocaleString('ru-RU')}</small><span>→</span></button><button className="project-delete" disabled={busy} title="Удалить проект" onClick={() => void run(() => deleteProject(p.id, p.name))}>🗑</button></div>) : <p className="help">Сохранённых проектов пока нет.</p>}</section></div>}
+    <input hidden ref={restoreInput} type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file && mayLeave()) void run(async () => { const parsed = JSON.parse(await file.text()) as Record<string, unknown>; if (staticMode) { const proj = (parsed && typeof parsed === 'object' && 'project' in parsed) ? parsed.project : parsed; if (proj && (proj as Partial<Project>).schemaVersion === 1 && Array.isArray((proj as Partial<Project>).floors)) { load(proj as unknown as Project, true); setMessage('Проект загружен из файла.'); } else { setError('Файл не является проектом CablePlan.'); } } else if (parsed && typeof parsed === 'object' && 'project' in parsed) { const result = await api<Project>('/api/restore', jsonOptions('POST', parsed)); load(result, true); setMessage('Резервная копия с PDF восстановлена.'); } else if (parsed && (parsed as Partial<Project>).schemaVersion === 1 && Array.isArray((parsed as Partial<Project>).floors)) { load(parsed as unknown as Project, false); setMessage('Проект загружен из файла. Подложку PDF при необходимости загрузите заново.'); } else { setError('Файл не является проектом или резервной копией CablePlan.'); } }); e.target.value = ''; }} />
+    {projects && <div className="modal-backdrop"><section className="modal"><div className="modal-heading"><h2>Открыть проект</h2><button onClick={() => setProjects(null)}>×</button></div>{projects.length ? projects.map(p => <div className="project-row" key={p.id}><button className="project-option" disabled={busy} onClick={() => { if (mayLeave()) void run(async () => { const result = staticMode ? lsProjects().find(x => x.id === p.id)! : await api<Project>(`/api/projects/${p.id}`); load(result, true); setProjects(null); setMessage(`Проект «${result.name}» открыт.`); }); }}><strong>{p.name}</strong><small>{new Date(p.updatedAt).toLocaleString('ru-RU')}</small><span>→</span></button><button className="project-delete" disabled={busy} title="Удалить проект" onClick={() => void run(() => deleteProject(p.id, p.name))}>🗑</button></div>) : <p className="help">Сохранённых проектов пока нет.</p>}</section></div>}
   </div>;
 }
 

@@ -1,5 +1,5 @@
 {
-  "name": "cableplan-engineering", "version": "1.0.0", "private": true, "type": "module",
+  "name": "cableplan", "version": "1.0.0", "private": true, "type": "module",
   "scripts": {"dev":"concurrently -k \"tsx watch server/index.ts\" \"vite --host 0.0.0.0\"", "build":"tsc --noEmit && vite build", "start":"tsx server/index.ts", "test":"tsx --test tests/*.test.ts", "test:ui":"playwright test"},
   "dependencies":{"express":"^5.1.0","multer":"^2.0.2","xlsx":"^0.18.5","pdfkit":"^0.17.2","pdfjs-dist":"^5.4.624","react":"^19.2.0","react-dom":"^19.2.0"},
   "devDependencies":{"@types/express":"^5.0.3","@types/multer":"^2.0.0","@types/pdfkit":"^0.17.3","@types/node":"^24.0.0","@types/react":"^19.2.0","@types/react-dom":"^19.2.0","@vitejs/plugin-react":"^5.1.0","vite":"^7.2.0","typescript":"^5.9.3","tsx":"^4.20.6","concurrently":"^9.2.1","@playwright/test":"^1.56.1"}
