@@ -25,6 +25,35 @@ const LS_PROJECTS = 'cableplan:projects';
 function lsProjects(): Project[] { try { const raw = localStorage.getItem(LS_PROJECTS); const list = JSON.parse(raw || '[]'); return Array.isArray(list) ? list : []; } catch { return []; } }
 function lsSave(project: Project) { const list = lsProjects(); const i = list.findIndex(p => p.id === project.id); if (i >= 0) list[i] = project; else list.push(project); localStorage.setItem(LS_PROJECTS, JSON.stringify(list)); }
 function lsDelete(id: string) { localStorage.setItem(LS_PROJECTS, JSON.stringify(lsProjects().filter(p => p.id !== id))); }
+function idbOpen(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('cableplan', 1);
+    req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('pdfs')) req.result.createObjectStore('pdfs'); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbPut(key: string, value: Blob): Promise<void> {
+  const db = await idbOpen();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('pdfs', 'readwrite');
+    tx.objectStore('pdfs').put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbGet(key: string): Promise<Blob | undefined> {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('pdfs', 'readonly');
+    const req = tx.objectStore('pdfs').get(key);
+    req.onsuccess = () => resolve(req.result as Blob | undefined);
+    req.onerror = () => reject(req.error);
+  });
+}
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1] ?? ''); reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob); });
+}
 
 export default function App() {
   const [project, setProject] = useState<Project>(freshProject);
@@ -136,7 +165,9 @@ export default function App() {
   useEffect(() => { setDraft([]); setCalibration([]); setPdfPages(0); setPdfError(''); }, [floor?.id, floor?.pdfId]);
   useEffect(() => {
     if (!floor?.pdfId || view !== 'plan') return;
-    const key = `${floor.id}:${floor.pdfId}:${floor.page}`;
+    const currentFloor = floor;
+    const pdfId = floor.pdfId;
+    const key = `${currentFloor.id}:${pdfId}:${currentFloor.page}`;
     const target = canvas.current; if (!target) return;
     const ctx = target.getContext('2d'); if (!ctx) return;
     if (pdfCache.current?.key === key) {
@@ -145,15 +176,22 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    const task = pdfjs.getDocument(floor.pdfId.startsWith('data:') ? floor.pdfId : `/api/pdfs/${floor.pdfId}`);
     let renderTask: ReturnType<pdfjs.PDFPageProxy['render']> | undefined;
+    let loadingTask: ReturnType<typeof pdfjs.getDocument> | undefined;
     void (async () => {
       try {
-        const document = await task.promise; if (cancelled) return; setPdfPages(document.numPages);
-        const page = await document.getPage(Math.min(Math.max(1, floor.page), document.numPages)); if (cancelled) return;
+        if (pdfId.startsWith('idb:')) {
+          const blob = await idbGet(pdfId.slice(4));
+          if (!blob) throw new Error('PDF не найден в хранилище браузера');
+          loadingTask = pdfjs.getDocument({ data: await blob.arrayBuffer() });
+        } else {
+          loadingTask = pdfjs.getDocument(pdfId.startsWith('data:') ? pdfId : `/api/pdfs/${pdfId}`);
+        }
+        const document = await loadingTask.promise; if (cancelled) return; setPdfPages(document.numPages);
+        const page = await document.getPage(Math.min(Math.max(1, currentFloor.page), document.numPages)); if (cancelled) return;
         const viewport = page.getViewport({ scale: 1 });
-        if (Math.abs(viewport.width - floor.width) > .01 || Math.abs(viewport.height - floor.height) > .01) {
-          mutate(p => { const target = p.floors.find(f => f.id === floor.id)!; target.width = viewport.width; target.height = viewport.height; });
+        if (Math.abs(viewport.width - currentFloor.width) > .01 || Math.abs(viewport.height - currentFloor.height) > .01) {
+          mutate(p => { const target = p.floors.find(f => f.id === currentFloor.id)!; target.width = viewport.width; target.height = viewport.height; });
         }
         const current = canvas.current; if (!current) return;
         const scale = Math.min(2, window.devicePixelRatio || 1);
@@ -165,7 +203,7 @@ export default function App() {
         pdfCache.current = { key, canvas: cached };
       } catch (e) { if (!cancelled) setPdfError(`PDF не отображён: ${e instanceof Error ? e.message : String(e)}`); }
     })();
-    return () => { cancelled = true; renderTask?.cancel(); void task.destroy(); };
+    return () => { cancelled = true; renderTask?.cancel(); loadingTask?.destroy(); };
   }, [floor?.pdfId, floor?.page, floor?.id, view]);
 
   function position(e: { clientX: number; clientY: number }, useSnap = true): Point {
@@ -337,8 +375,9 @@ export default function App() {
   async function uploadPdf(file: File) {
     if (!floor) return;
     if (staticMode) {
-      const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result as string); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
-      mutate(p => { const target = p.floors.find(f => f.id === floor.id)!; target.pdfId = dataUrl; target.page = 1; target.metersPerUnit = null; });
+      const key = uid();
+      await idbPut(key, file);
+      mutate(p => { const target = p.floors.find(f => f.id === floor.id)!; target.pdfId = 'idb:' + key; target.page = 1; target.metersPerUnit = null; });
       setMessage(`PDF «${file.name}» загружен. Выберите страницу и откалибруйте масштаб.`);
       return;
     }
@@ -370,7 +409,18 @@ export default function App() {
     if (staticMode) {
       if (kind === 'xlsx' || kind === 'pdf') { setError('Экспорт XLSX/PDF доступен только в локальной версии. Используйте CSV.'); return; }
       const current = projectRef.current;
-      const text = kind === 'backup' ? JSON.stringify({ schemaVersion: 1, project: current, pdfs: [] }) : clientCsv(current);
+      let text: string;
+      if (kind === 'backup') {
+        const ids = [...new Set(current.floors.flatMap(f => f.pdfId && f.pdfId.startsWith('idb:') ? [f.pdfId.slice(4)] : []))];
+        const pdfs: { id: string; name: string; dataBase64: string }[] = [];
+        for (const id of ids) {
+          const pdfBlob = await idbGet(id);
+          if (pdfBlob) pdfs.push({ id: 'idb:' + id, name: 'plan.pdf', dataBase64: await blobToBase64(pdfBlob) });
+        }
+        text = JSON.stringify({ schemaVersion: 1, project: current, pdfs });
+      } else {
+        text = clientCsv(current);
+      }
       const type = kind === 'backup' ? 'application/json' : 'text/csv;charset=utf-8';
       const blob = new Blob([text], { type });
       const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${current.name}.${kind === 'backup' ? 'json' : 'csv'}`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
@@ -435,7 +485,7 @@ export default function App() {
     {(menuOpen || propsOpen) && <div className="scrim" onClick={() => { setMenuOpen(false); setPropsOpen(false); }} />}
     <button className={`props-fab ${propsOpen ? 'active' : ''}`} aria-label="Свойства" onClick={() => setPropsOpen(v => !v)}>⚙</button>
     <input hidden ref={upload} type="file" accept="application/pdf,.pdf" onChange={e => { const file = e.target.files?.[0]; if (file) void run(() => uploadPdf(file)); e.target.value = ''; }} />
-    <input hidden ref={restoreInput} type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file && mayLeave()) void run(async () => { const parsed = JSON.parse(await file.text()) as Record<string, unknown>; if (staticMode) { const proj = (parsed && typeof parsed === 'object' && 'project' in parsed) ? parsed.project : parsed; if (proj && (proj as Partial<Project>).schemaVersion === 1 && Array.isArray((proj as Partial<Project>).floors)) { load(proj as unknown as Project, true); setMessage('Проект загружен из файла.'); } else { setError('Файл не является проектом CablePlan.'); } } else if (parsed && typeof parsed === 'object' && 'project' in parsed) { const result = await api<Project>('/api/restore', jsonOptions('POST', parsed)); load(result, true); setMessage('Резервная копия с PDF восстановлена.'); } else if (parsed && (parsed as Partial<Project>).schemaVersion === 1 && Array.isArray((parsed as Partial<Project>).floors)) { load(parsed as unknown as Project, false); setMessage('Проект загружен из файла. Подложку PDF при необходимости загрузите заново.'); } else { setError('Файл не является проектом или резервной копией CablePlan.'); } }); e.target.value = ''; }} />
+    <input hidden ref={restoreInput} type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file && mayLeave()) void run(async () => { const parsed = JSON.parse(await file.text()) as Record<string, unknown>; if (staticMode) { const proj = (parsed && typeof parsed === 'object' && 'project' in parsed) ? parsed.project : parsed; if (proj && (proj as Partial<Project>).schemaVersion === 1 && Array.isArray((proj as Partial<Project>).floors)) { const rawPdfs = (parsed && typeof parsed === 'object' && 'pdfs' in parsed && Array.isArray(parsed.pdfs)) ? parsed.pdfs as { id: string; dataBase64?: string }[] : []; for (const pdf of rawPdfs) { if (pdf && pdf.id && pdf.dataBase64) { const bytes = Uint8Array.from(atob(pdf.dataBase64), c => c.charCodeAt(0)); await idbPut(pdf.id.replace(/^idb:/, ''), new Blob([bytes], { type: 'application/pdf' })); } } load(proj as unknown as Project, true); setMessage('Проект загружен из файла.'); } else { setError('Файл не является проектом CablePlan.'); } } else if (parsed && typeof parsed === 'object' && 'project' in parsed) { const result = await api<Project>('/api/restore', jsonOptions('POST', parsed)); load(result, true); setMessage('Резервная копия с PDF восстановлена.'); } else if (parsed && (parsed as Partial<Project>).schemaVersion === 1 && Array.isArray((parsed as Partial<Project>).floors)) { load(parsed as unknown as Project, false); setMessage('Проект загружен из файла. Подложку PDF при необходимости загрузите заново.'); } else { setError('Файл не является проектом или резервной копией CablePlan.'); } }); e.target.value = ''; }} />
     {projects && <div className="modal-backdrop"><section className="modal"><div className="modal-heading"><h2>Открыть проект</h2><button onClick={() => setProjects(null)}>×</button></div>{projects.length ? projects.map(p => <div className="project-row" key={p.id}><button className="project-option" disabled={busy} onClick={() => { if (mayLeave()) void run(async () => { const result = staticMode ? lsProjects().find(x => x.id === p.id)! : await api<Project>(`/api/projects/${p.id}`); load(result, true); setProjects(null); setMessage(`Проект «${result.name}» открыт.`); }); }}><strong>{p.name}</strong><small>{new Date(p.updatedAt).toLocaleString('ru-RU')}</small><span>→</span></button><button className="project-delete" disabled={busy} title="Удалить проект" onClick={() => void run(() => deleteProject(p.id, p.name))}>🗑</button></div>) : <p className="help">Сохранённых проектов пока нет.</p>}</section></div>}
   </div>;
 }
