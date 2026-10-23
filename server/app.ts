@@ -37,8 +37,17 @@ export function createApp(options?: { dataDir: string }) {
     store.save(p); warnings(res, p); res.json(p);
   });
   app.delete('/api/projects/:id', (req, res) => {
-    getProject(req.params.id);
+    const project = getProject(req.params.id);
     store.deleteProject(req.params.id);
+    // Удаляем исходные PDF, на которые больше не ссылается ни один проект.
+    const used = new Set<string>();
+    for (const summary of store.list() as { id: string }[]) {
+      const other = store.project(summary.id);
+      if (other) for (const floor of other.floors) if (floor.pdfId && !floor.pdfId.startsWith('data:') && !floor.pdfId.startsWith('idb:')) used.add(floor.pdfId);
+    }
+    for (const floor of project.floors) {
+      if (floor.pdfId && !floor.pdfId.startsWith('data:') && !floor.pdfId.startsWith('idb:') && !used.has(floor.pdfId)) store.deletePdf(floor.pdfId);
+    }
     res.json({ ok: true });
   });
   app.post('/api/pdfs', upload.single('file'), (req, res) => {

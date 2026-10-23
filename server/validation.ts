@@ -44,6 +44,11 @@ export function assertProject(input: unknown, pdfExists: (id: string) => boolean
     if (f.pdfId !== undefined) { text(f.pdfId, 'floor.pdfId', true); if (!f.pdfId.startsWith('data:') && !f.pdfId.startsWith('idb:') && !pdfExists(f.pdfId)) fail(`PDF не найден: ${f.pdfId}`); }
   }
   uniqueNumbers(equipment, 'equipment'); uniqueNumbers(routes, 'routes'); uniqueNumbers(cables, 'cables');
+  const uniqueNames = (items: any[], at: string) => {
+    const seen = new Set<string>();
+    for (const item of items) { object(item, at); text(item.name, `${at}.name`); const n = item.name.trim(); if (n && seen.has(n)) fail(`Повтор имени ${at}: ${n}`); if (n) seen.add(n); }
+  };
+  uniqueNames(equipment, 'equipment');
   const position = (v: any, at: string) => {
     text(v.floorId, `${at}.floorId`, true); if (!floorIds.has(v.floorId)) fail(`Этаж не найден: ${v.floorId}`);
     number(v.x, `${at}.x`); number(v.y, `${at}.y`); number(v.height, `${at}.height`, true, 0);

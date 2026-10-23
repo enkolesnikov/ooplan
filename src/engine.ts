@@ -91,17 +91,19 @@ export function findRoute(project: Project, fromId: string, toId: string): { seg
   if (!from || !to) return { segmentIds: [], error: 'Оборудование не найдено.' };
 
   const key = (floorId: string, x: number, y: number) => `${floorId}|${x.toFixed(3)}|${y.toFixed(3)}`;
-  const adjacency = new Map<string, { segmentId: string; other: string }[]>();
+  const adjacency = new Map<string, { segmentId: string; other: string; weight: number }[]>();
   const positions = new Map<string, { floorId: string; x: number; y: number }>();
+  const weightOf = (segment: Segment) => { const length = segmentLength(project, segment); return length === null ? 1 : Math.max(length, 1e-6); };
 
   for (const route of project.routes) {
     for (const segment of route.segments) {
       const ka = key(segment.a.floorId, segment.a.x, segment.a.y);
       const kb = key(segment.b.floorId, segment.b.x, segment.b.y);
+      const weight = weightOf(segment);
       if (!adjacency.has(ka)) { adjacency.set(ka, []); positions.set(ka, { floorId: segment.a.floorId, x: segment.a.x, y: segment.a.y }); }
       if (!adjacency.has(kb)) { adjacency.set(kb, []); positions.set(kb, { floorId: segment.b.floorId, x: segment.b.x, y: segment.b.y }); }
-      adjacency.get(ka)!.push({ segmentId: segment.id, other: kb });
-      adjacency.get(kb)!.push({ segmentId: segment.id, other: ka });
+      adjacency.get(ka)!.push({ segmentId: segment.id, other: kb, weight });
+      adjacency.get(kb)!.push({ segmentId: segment.id, other: ka, weight });
     }
   }
 
@@ -120,21 +122,28 @@ export function findRoute(project: Project, fromId: string, toId: string): { seg
   if (!start || !end) return { segmentIds: [], error: 'На плане нет трассы для маршрута.' };
   if (start === end) return { segmentIds: [], error: 'Оба устройства подключены к одной точке трассы.' };
 
-  const prev = new Map<string, { node: string; segmentId: string } | null>();
-  prev.set(start, null);
-  const queue: string[] = [start];
-  let found = false;
-  for (let i = 0; i < queue.length && !found; i++) {
-    const cur = queue[i];
-    for (const edge of adjacency.get(cur) ?? []) {
-      if (prev.has(edge.other)) continue;
-      prev.set(edge.other, { node: cur, segmentId: edge.segmentId });
-      if (edge.other === end) { found = true; break; }
-      queue.push(edge.other);
+  // Дейкстра по физической длине: путь с минимумом участков мог оказаться длиннее обхода.
+  const shortest = new Map<string, number>([[start, 0]]);
+  const prev = new Map<string, { node: string; segmentId: string } | null>([[start, null]]);
+  const visited = new Set<string>();
+  while (true) {
+    let current: string | null = null;
+    let best = Infinity;
+    for (const [node, distance] of shortest) if (!visited.has(node) && distance < best) { best = distance; current = node; }
+    if (!current) break;
+    visited.add(current);
+    if (current === end) break;
+    for (const edge of adjacency.get(current) ?? []) {
+      if (visited.has(edge.other)) continue;
+      const candidate = best + edge.weight;
+      if (candidate < (shortest.get(edge.other) ?? Infinity)) {
+        shortest.set(edge.other, candidate);
+        prev.set(edge.other, { node: current, segmentId: edge.segmentId });
+      }
     }
   }
 
-  if (!found) return { segmentIds: [], error: 'Между устройствами нет непрерывной трассы. Соедините трассы между собой.' };
+  if (!shortest.has(end)) return { segmentIds: [], error: 'Между устройствами нет непрерывной трассы. Соедините трассы между собой.' };
 
   const segmentIds: string[] = [];
   let node: string | null = end;
@@ -293,6 +302,21 @@ export function validateProject(project: Project): string[] {
       seen.add(item.id);
     }
   }
+  const uniqueFields = (items: { number: string; name?: string }[], at: string) => {
+    const numbers = new Set<string>();
+    const names = new Set<string>();
+    for (const item of items) {
+      const n = (item.number || '').trim();
+      if (n && numbers.has(n)) errors.push(`Повторный номер ${at}: ${n}`);
+      if (n) numbers.add(n);
+      const name = (item.name || '').trim();
+      if (name && names.has(name)) errors.push(`Повторное имя ${at}: ${name}`);
+      if (name) names.add(name);
+    }
+  };
+  uniqueFields(project.equipment, 'оборудования');
+  uniqueFields(project.routes, 'трассы');
+  uniqueFields(project.cables, 'кабеля');
   for (const floor of project.floors) {
     if (!finite(floor.metersPerUnit) || floor.metersPerUnit <= 0) errors.push(`Этаж ${floor.name}: неизвестен или неверен масштаб`);
     if (!finite(floor.elevation)) errors.push(`Этаж ${floor.name}: неизвестна отметка`);

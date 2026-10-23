@@ -127,3 +127,25 @@ test('DELETE удаляет проект из хранилища', async () => {
     assert.equal((await h.request('/api/projects/project-1', 'DELETE')).status, 404);
   } finally { await h.close(); }
 });
+
+test('DELETE удаляет осиротевшие PDF, но сохраняет используемые', async () => {
+  const h = await harness();
+  try {
+    const form = new FormData(); form.append('file', new Blob([originalPdf], { type: 'application/pdf' }), 'plan.pdf');
+    const uploaded = await fetch(h.base + '/api/pdfs', { method: 'POST', body: form });
+    const record = await uploaded.json() as { id: string; name: string };
+    const p = fixture(); p.floors[0].pdfId = record.id;
+    assert.equal((await h.request('/api/projects', 'POST', p)).status, 201);
+    assert.equal((await h.request('/api/pdfs/' + record.id)).status, 200);
+    assert.equal((await h.request('/api/projects/project-1', 'DELETE')).status, 200);
+    assert.equal((await h.request('/api/pdfs/' + record.id)).status, 404);
+  } finally { await h.close(); }
+});
+
+test('повтор имени оборудования отклоняется', async () => {
+  const h = await harness();
+  try {
+    const p = fixture(); p.equipment[1].name = p.equipment[0].name;
+    assert.equal((await h.request('/api/projects', 'POST', p)).status, 422);
+  } finally { await h.close(); }
+});

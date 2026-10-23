@@ -20,6 +20,7 @@ export class Store {
   }
   save(p: Project) { this.db.prepare('INSERT INTO projects(id,name,updated_at,body) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at,body=excluded.body').run(p.id, p.name, p.updatedAt, JSON.stringify(p)); }
   deleteProject(id: string) { this.db.prepare('DELETE FROM projects WHERE id=?').run(id); }
+  deletePdf(id: string) { this.db.prepare('DELETE FROM pdfs WHERE id=?').run(id); }
   pdf(id: string): PdfRecord | undefined {
     const row = this.db.prepare('SELECT id,name,bytes FROM pdfs WHERE id=?').get(id) as { id: string; name: string; bytes: Uint8Array } | undefined;
     return row ? { ...row, bytes: Buffer.from(row.bytes) } : undefined;

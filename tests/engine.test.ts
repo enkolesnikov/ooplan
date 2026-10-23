@@ -5,7 +5,7 @@ import type { Equipment, Project, Segment, Vertex } from '../src/model';
 
 const vertex = (id: string, x: number, y = 0, height: number | null = 3, floorId = 'f1'): Vertex => ({ id, x, y, height, floorId });
 const segment = (id: string, a: Vertex, b: Vertex, extra: Partial<Segment> = {}): Segment => ({ id, a, b, mode: 'orthogonal', reservePercent: 0, reserveFixed: 0, ...extra });
-const device = (id: string, x: number, height: number | null = 1, floorId = 'f1'): Equipment => ({ id, number: id, name: 'Датчик', type: 'Датчик', floorId, x, y: 0, height, note: '', properties: { model: 'Д-1' } });
+const device = (id: string, x: number, height: number | null = 1, floorId = 'f1'): Equipment => ({ id, number: id, name: `Датчик ${id}`, type: 'Датчик', floorId, x, y: 0, height, note: '', properties: { model: 'Д-1' } });
 function fixture(): Project {
   return {
     schemaVersion: 1, id: 'p', name: 'Тест', updatedAt: '2026-01-01T00:00:00Z',
@@ -194,4 +194,31 @@ test('findRoute прокладывает маршрут по сегментам 
   p.equipment[1] = device('b', 300);
   assert.ok(findRoute(p, 'a', 'b').error);
   assert.equal(findRoute(p, 'a', 'b').segmentIds.length, 0);
+});
+
+test('validateProject требует уникальные имена и номера оборудования', () => {
+  const p = fixture();
+  p.equipment[1].name = p.equipment[0].name;
+  assert.ok(validateProject(p).some(e => e.includes('Повторное имя')));
+  p.equipment[1].name = 'Другой датчик';
+  p.equipment[1].number = p.equipment[0].number;
+  assert.ok(validateProject(p).some(e => e.includes('Повторный номер')));
+});
+
+test('findRoute выбирает маршрут по длине, а не по числу сегментов', () => {
+  const p = fixture();
+  const a = vertex('a', 0, 0, 3);
+  const mid = vertex('mid', 0, 100, 3);
+  const c1 = vertex('c1', 33, 0, 3);
+  const c2 = vertex('c2', 66, 0, 3);
+  const b = vertex('b', 100, 0, 3);
+  // Длинный путь из двух сегментов (24.1 м) против короткого из трёх (10 м).
+  p.routes[0].segments = [
+    segment('s1', a, mid),
+    segment('s2', mid, b, { mode: 'spatial' }),
+    segment('s3', a, c1),
+    segment('s4', c1, c2),
+    segment('s5', c2, b),
+  ];
+  assert.deepEqual(findRoute(p, 'a', 'b').segmentIds, ['s3', 's4', 's5']);
 });
