@@ -41,7 +41,7 @@ export function assertProject(input: unknown, pdfExists: (id: string) => boolean
     if (f.metersPerUnit === 0) fail('Масштаб должен быть положительным или null');
     number(f.page, 'floor.page', false, 1); if (!Number.isInteger(f.page)) fail('Номер страницы должен быть целым');
     number(f.width, 'floor.width', false, 0); number(f.height, 'floor.height', false, 0);
-    if (f.pdfId !== undefined) { text(f.pdfId, 'floor.pdfId', true); if (!pdfExists(f.pdfId)) fail(`PDF не найден: ${f.pdfId}`); }
+    if (f.pdfId !== undefined) { text(f.pdfId, 'floor.pdfId', true); if (!f.pdfId.startsWith('data:') && !f.pdfId.startsWith('idb:') && !pdfExists(f.pdfId)) fail(`PDF не найден: ${f.pdfId}`); }
   }
   uniqueNumbers(equipment, 'equipment'); uniqueNumbers(routes, 'routes'); uniqueNumbers(cables, 'cables');
   const position = (v: any, at: string) => {

@@ -20,10 +20,60 @@ const cable = (
   fromId: string, toId: string, segmentIds: string[], quantity = 1,
 ): Cable => ({ id, number, name, brand, purpose, fromId, toId, segmentIds, reservePercent: 10, reserveFixed: 0, startReserve: 0.5, endReserve: 0.5, quantity, note: '' });
 
+/** Простейший схематичный план здания в виде PDF (вектор, стандартный шрифт, без внешних файлов). */
+export function demoPlanPdf(): string {
+  const W = 1000, H = 700;
+  const ops: string[] = [];
+  const line = (x1: number, y1: number, x2: number, y2: number) => ops.push(`${x1} ${y1} m ${x2} ${y2} l S`);
+  const rect = (x: number, y: number, w: number, h: number) => ops.push(`${x} ${y} ${w} ${h} re S`);
+  // Наружные стены
+  rect(60, 60, 880, 580);
+  // Коридор по центру (вдоль него идут трассы)
+  line(60, 300, 940, 300);
+  line(60, 400, 940, 400);
+  // Верхние комнаты
+  line(250, 400, 250, 640);
+  line(450, 400, 450, 640);
+  line(650, 400, 650, 640);
+  // Нижние комнаты
+  line(300, 60, 300, 300);
+  line(600, 60, 600, 300);
+  // Дверные проёмы в коридор
+  line(240, 300, 240, 380);
+  line(440, 300, 440, 380);
+  line(640, 300, 640, 380);
+  // Подписи (латиница — стандартный Helvetica)
+  ops.push('BT /F1 20 Tf 70 650 Td (CABLEPLAN - DEMO FLOOR PLAN) Tj ET');
+  ops.push('BT /F1 12 Tf 70 30 Td (Synthetic training plan. Not a working drawing.) Tj ET');
+  const content = ops.join('\n');
+  const objects = [
+    '<</Type/Catalog/Pages 2 0 R>>',
+    '<</Type/Pages/Kids[3 0 R]/Count 1>>',
+    `<</Type/Page/Parent 2 0 R/MediaBox[0 0 ${W} ${H}]/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>`,
+    `<</Length ${content.length}>>stream\n${content}\nendstream`,
+    '<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>',
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  for (let i = 0; i < objects.length; i++) {
+    offsets.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += `${String(off).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<</Size ${objects.length + 1}/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF`;
+  const bytes = new TextEncoder().encode(pdf);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return 'data:application/pdf;base64,' + btoa(binary);
+}
+
 /** Synthetic project for the UI walkthrough; not a substitute for real drawings. */
 export function createDemoProject(): Project {
-  const f1 = floor(uid(), 'Этаж 1', 0, 1);
-  const f2 = floor(uid(), 'Этаж 2', 4, 2);
+  const plan = demoPlanPdf();
+  const f1: Floor = { ...floor(uid(), 'Этаж 1', 0, 1), pdfId: plan };
+  const f2: Floor = { ...floor(uid(), 'Этаж 2', 4, 2), pdfId: plan };
 
   const equipmentList: Equipment[] = [
     equipment(uid(), 'Ш1', 'Шкаф питания', 'Шкаф', f1.id, 100, 350, 0),

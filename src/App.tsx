@@ -184,8 +184,11 @@ export default function App() {
           const blob = await idbGet(pdfId.slice(4));
           if (!blob) throw new Error('PDF не найден в хранилище браузера');
           loadingTask = pdfjs.getDocument({ data: await blob.arrayBuffer() });
+        } else if (pdfId.startsWith('data:')) {
+          const base64 = pdfId.slice(pdfId.indexOf(',') + 1);
+          loadingTask = pdfjs.getDocument({ data: Uint8Array.from(atob(base64), c => c.charCodeAt(0)) });
         } else {
-          loadingTask = pdfjs.getDocument(pdfId.startsWith('data:') ? pdfId : `/api/pdfs/${pdfId}`);
+          loadingTask = pdfjs.getDocument(`/api/pdfs/${pdfId}`);
         }
         const document = await loadingTask.promise; if (cancelled) return; setPdfPages(document.numPages);
         const page = await document.getPage(Math.min(Math.max(1, currentFloor.page), document.numPages)); if (cancelled) return;
