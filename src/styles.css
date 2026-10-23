@@ -373,6 +373,8 @@ td small { display: block; color: var(--muted); font-size: 12px; }
 .props-fab { display: none; }
 .properties-close { display: none; }
 .scrim { display: none; }
+.sidebar-project { display: none; }
+.field.mobile-only { display: none; }
 
 @media (max-width: 1023px) {
   .menu-toggle {
@@ -391,6 +393,10 @@ td small { display: block; color: var(--muted); font-size: 12px; }
     width: 40px; height: 40px; border: none; background: transparent; color: var(--muted); font-size: 24px;
   }
   .scrim { display: block; position: fixed; inset: 0; z-index: 58; background: rgba(12, 29, 39, .45); }
+  .desk-only { display: none; }
+  .sidebar-project { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-top: 1px solid var(--border-soft); }
+  .sidebar-project button { text-align: left; }
+  .field.mobile-only { display: flex; }
 
   .sidebar {
     position: fixed; top: 0; left: 0; bottom: 0; width: min(86vw, 320px); z-index: 60;
@@ -408,22 +414,22 @@ td small { display: block; color: var(--muted); font-size: 12px; }
 
   /* larger tap targets and compact top bars */
   button, input, select, textarea { min-height: 40px; }
-  .topbar { gap: 8px; padding: 7px 10px; flex-wrap: wrap; }
-  .brand small { display: none; }
+  .topbar { gap: 6px; padding: 6px 8px; flex-wrap: nowrap; }
+  .brand { display: none; }
   .brand-mark { width: 32px; height: 32px; font-size: 16px; }
   .project-heading { flex: 1 1 auto; min-width: 0; }
   .project-heading input { font-size: 14px; max-width: 100%; }
   .save-indicator { display: none; }
   .top-actions { gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
-  .top-actions button { padding: 7px 8px; font-size: 12px; white-space: nowrap; }
-  .commandbar { flex-wrap: wrap; gap: 4px; padding: 4px 8px; }
-  .view-tabs { flex: 1 1 100%; }
-  .view-tabs button { flex: 1; padding: 9px 4px; font-size: 13px; }
-  .command-actions { flex-wrap: wrap; gap: 4px; }
+  .top-actions button { padding: 6px 9px; font-size: 12px; white-space: nowrap; }
+  .commandbar { flex-wrap: nowrap; gap: 4px; padding: 4px 8px; }
+  .view-tabs { flex: 1 1 auto; }
+  .view-tabs button { flex: 1; padding: 8px 3px; font-size: 12px; white-space: nowrap; }
+  .command-actions { flex-wrap: nowrap; gap: 4px; flex-shrink: 0; }
 
   /* план: максимум площади, инструменты — крупная нижняя панель */
   .plan-view { display: flex; flex-direction: column; }
-  .drawing-options { order: 1; gap: 8px; padding: 5px 8px; font-size: 12px; flex-wrap: nowrap; overflow-x: auto; }
+  .drawing-options { display: none; }
   .contextbar { order: 2; }
   .banner.error { order: 2; }
   .drawing-stage { order: 3; }
